@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+<title>Kingdom Rush — Proto Fun</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="hud">
+    <div class="counter" data-res="ble"><span class="ico"></span><span class="val" id="c-ble">0</span></div>
+    <div class="counter" data-res="bois"><span class="ico"></span><span class="val" id="c-bois">0</span></div>
+    <div class="counter" data-res="pierre"><span class="ico"></span><span class="val" id="c-pierre">0</span></div>
+    <div class="counter" data-res="eau"><span class="ico"></span><span class="val" id="c-eau">0</span></div>
+    <div class="counter" data-res="or"><span class="ico"></span><span class="val" id="c-or">0</span></div>
+    <div class="counter pop"><span class="ico-p">P</span><span class="val" id="c-pop">2</span></div>
+    <div class="counter pop"><span class="ico-s">S</span><span class="val" id="c-sol">0</span></div>
+  </div>
+
+  <canvas id="game"></canvas>
+
+  <div id="toast"></div>
+
+  <!-- Préchargement des icônes ressources -->
+  <div id="icons-preload" aria-hidden="true">
+    <img id="img-ble" src="icons/ble.png" />
+    <img id="img-bois" src="icons/bois.png" />
+    <img id="img-pierre" src="icons/pierre.png" />
+    <img id="img-eau" src="icons/eau.png" />
+    <img id="img-or" src="icons/or.png" />
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>

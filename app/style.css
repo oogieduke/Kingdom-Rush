@@ -1,0 +1,115 @@
+/* ========== Tokens parchemin warm ========== */
+:root {
+  --parch-1: #f6e9c9;
+  --parch-2: #ecd9a8;
+  --parch-3: #d9bf83;
+  --parch-shadow: #a07c3a;
+  --ink: #3d2817;
+  --ink-soft: #6b4a2b;
+  --gold: #d4a653;
+  --gold-bright: #f5c451;
+  --red: #b83a2c;
+  --red-soft: #e16a55;
+  --green: #4f7a3a;
+  --green-bright: #7bb24a;
+  --blue: #4a78a8;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%; height: 100%; overflow: hidden;
+  background: radial-gradient(ellipse at center, #f6e9c9 0%, #d9bf83 100%);
+  font-family: 'Manrope', 'Segoe UI', system-ui, sans-serif;
+  color: var(--ink);
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+#game {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  touch-action: none;
+}
+
+/* ========== HUD compteurs ========== */
+#hud {
+  position: fixed;
+  top: 14px; left: 50%;
+  transform: translateX(-50%);
+  display: flex; gap: 10px;
+  background: linear-gradient(180deg, var(--parch-1), var(--parch-2));
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 2px solid var(--parch-shadow);
+  box-shadow: 0 4px 12px rgba(60,40,20,0.25), inset 0 1px 0 rgba(255,255,255,0.4);
+  z-index: 10;
+  font-family: 'Cinzel', 'Georgia', serif;
+  font-weight: 600;
+}
+
+.counter {
+  display: flex; align-items: center; gap: 5px;
+  padding: 4px 8px;
+  background: rgba(255, 250, 230, 0.4);
+  border-radius: 6px;
+  min-width: 56px;
+  transition: transform 120ms ease-out, background 200ms;
+}
+.counter.bump { transform: scale(1.15); background: rgba(245, 196, 81, 0.5); }
+
+.counter .ico {
+  width: 22px; height: 22px;
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+  image-rendering: pixelated;
+}
+.counter[data-res="ble"]    .ico { background-image: url('icons/ble.png'); }
+.counter[data-res="bois"]   .ico { background-image: url('icons/bois.png'); }
+.counter[data-res="pierre"] .ico { background-image: url('icons/pierre.png'); }
+.counter[data-res="eau"]    .ico { background-image: url('icons/eau.png'); }
+.counter[data-res="or"]     .ico { background-image: url('icons/or.png'); }
+
+.counter .val { font-size: 16px; min-width: 22px; text-align: right; color: var(--ink); }
+
+.counter.pop {
+  background: rgba(60, 40, 20, 0.08);
+}
+.ico-p, .ico-s {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 50%;
+  font-size: 13px; font-weight: 700;
+  color: #fff;
+}
+.ico-p { background: #8a6a3e; }
+.ico-s { background: #b83a2c; }
+
+/* ========== Toast event ========== */
+#toast {
+  position: fixed;
+  bottom: 24px; left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: rgba(60, 40, 23, 0.92);
+  color: var(--parch-1);
+  padding: 10px 18px;
+  border-radius: 8px;
+  border: 1px solid var(--gold);
+  font-family: 'Cinzel', 'Georgia', serif;
+  font-size: 14px;
+  letter-spacing: 0.3px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 280ms ease, transform 280ms ease;
+  z-index: 20;
+  max-width: 80vw;
+  text-align: center;
+}
+#toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+#icons-preload { position: absolute; left: -9999px; top: -9999px; width: 1px; height: 1px; overflow: hidden; }
