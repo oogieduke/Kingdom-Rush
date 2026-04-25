@@ -7,15 +7,15 @@
 'use strict';
 
 // ============== Constantes ==============
-const GRID_W = 15;
-const GRID_H = 15;
-const TILE = 56;            // taille de base d'une case en px
+const GRID_W = 24;
+const GRID_H = 18;
+const TILE = 44;            // taille de base d'une case en px
 const PADDING = 24;
 
-const CASTLE_X = 7, CASTLE_Y = 7;        // centre du complexe
-const CASTLE_RECT = { x: 6, y: 6, w: 3, h: 3 };
-const BARRACKS = { x: 5, y: 7 };
-const HOUSE_CIV = { x: 9, y: 7 };
+const CASTLE_X = 12, CASTLE_Y = 9;       // centre du complexe
+const CASTLE_RECT = { x: 11, y: 8, w: 3, h: 3 };
+const BARRACKS = { x: 10, y: 9 };
+const HOUSE_CIV = { x: 14, y: 9 };
 
 const TYPE = {
   EMPTY: 'empty', BLE: 'ble', BOIS: 'bois', PIERRE: 'pierre',
@@ -77,6 +77,8 @@ const state = {
   // sélection en cours
   drag: null,          // { startGX, startGY, curGX, curGY }
   selection: null,     // { x0, y0, x1, y1 } cellules inclusives
+  pending: false,      // sélection en attente de validation
+  validateBtn: null,   // { x, y, r } hitbox du bouton valider
   // expédition
   expe: null,          // état machine d'expédition (voir startExpedition)
   recruits: [],        // [{ id, x, y, vy, hover, dragging, opacity, age }]
@@ -153,15 +155,15 @@ function genMap() {
     }
   };
 
-  place(TYPE.BLE, 14, 'ble');
-  place(TYPE.BOIS, 13, 'bois');
-  place(TYPE.PIERRE, 10, 'pierre');
-  place(TYPE.EAU, 6, 'eau');
-  place(TYPE.OR, 3, 'or');
+  place(TYPE.BLE, 42, 'ble');
+  place(TYPE.BOIS, 34, 'bois');
+  place(TYPE.PIERRE, 26, 'pierre');
+  place(TYPE.EAU, 14, 'eau');
+  place(TYPE.OR, 6, 'or');
 
   // Maisons (recrutement)
   let houses = 0;
-  while (houses < 7 && shuffled.length) {
+  while (houses < 16 && shuffled.length) {
     const [sx, sy] = shuffled.pop();
     if (grid[sy][sx].type !== TYPE.EMPTY) continue;
     // pas trop près du château
@@ -171,7 +173,7 @@ function genMap() {
   }
   // Camps de monstres
   let monsters = 0;
-  while (monsters < 5 && shuffled.length) {
+  while (monsters < 12 && shuffled.length) {
     const [sx, sy] = shuffled.pop();
     if (grid[sy][sx].type !== TYPE.EMPTY) continue;
     if (Math.abs(sx - CASTLE_X) <= 2 && Math.abs(sy - CASTLE_Y) <= 2) continue;
@@ -239,13 +241,16 @@ function neighbors(gx, gy, r = 1) {
 
 // ============== Sélection (drag rectangle) ==============
 function maxSelSize() {
-  // 2 paysans → 2x2 ; 3 → 3x2 ; 4 → 3x3 ; 5+ → 4x3 etc
-  const p = state.paysans;
-  if (p <= 2) return { w: 2, h: 2 };
-  if (p === 3) return { w: 3, h: 2 };
-  if (p === 4) return { w: 3, h: 3 };
-  if (p === 5) return { w: 4, h: 3 };
-  return { w: 4, h: 4 };
+  // taille max = nombre total d'unités (paysans + soldats)
+  const total = state.paysans + state.soldats;
+  if (total <= 2) return { w: 2, h: 2 };
+  if (total <= 3) return { w: 3, h: 2 };
+  if (total <= 4) return { w: 3, h: 3 };
+  if (total <= 6) return { w: 4, h: 3 };
+  if (total <= 9) return { w: 4, h: 4 };
+  if (total <= 12) return { w: 5, h: 4 };
+  if (total <= 16) return { w: 5, h: 5 };
+  return { w: 6, h: 5 };
 }
 
 function clampSelection(x0, y0, x1, y1) {
@@ -307,49 +312,71 @@ function buildPath(sel) {
   return pts;
 }
 
-// Couleur d'un segment selon le voisinage local
+// Distance d'un point à un segment
+function pointToSegment(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.hypot(px - x1, py - y1);
+  let t = ((px - x1) * dx + (py - y1) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+}
+
+// Distance minimale d'un point au polyline complet
+function pointToPath(px, py, path) {
+  let mind = Infinity;
+  for (let i = 0; i < path.length - 1; i++) {
+    const d = pointToSegment(px, py, path[i].x, path[i].y, path[i + 1].x, path[i + 1].y);
+    if (d < mind) mind = d;
+  }
+  return mind;
+}
+
+// Distance seuil pour qu'un monstre menace le convoi
+const MONSTER_THREAT_RANGE = TILE * 1.1;
+
+// Renvoie les monstres qui interceptent le chemin (hors zone cible)
+function findThreatMonsters(path, sel) {
+  const out = [];
+  for (let y = 0; y < GRID_H; y++) {
+    for (let x = 0; x < GRID_W; x++) {
+      const t = state.grid[y][x];
+      if (t.type !== TYPE.MONSTER) continue;
+      if (sel && x >= sel.x0 && x <= sel.x1 && y >= sel.y0 && y <= sel.y1) continue;
+      const c = tileCenter(x, y);
+      const d = pointToPath(c.x, c.y, path);
+      if (d < MONSTER_THREAT_RANGE) out.push({ tile: t, distance: d });
+    }
+  }
+  return out;
+}
+
+// Couleur d'un segment selon ce qu'il croise
 function segmentColor(p1, p2) {
-  // cellule de mid
+  // monstre proche du segment ?
+  for (let y = 0; y < GRID_H; y++) {
+    for (let x = 0; x < GRID_W; x++) {
+      const t = state.grid[y][x];
+      if (t.type !== TYPE.MONSTER) continue;
+      const c = tileCenter(x, y);
+      const d = pointToSegment(c.x, c.y, p1.x, p1.y, p2.x, p2.y);
+      if (d < MONSTER_THREAT_RANGE) return COLORS.red;
+    }
+  }
+  // sinon : voisinage cellulaire (or / maison)
   const mx = (p1.x + p2.x) / 2;
   const my = (p1.y + p2.y) / 2;
   const { gx, gy } = pxToTile(mx, my);
   if (!inGrid(gx, gy)) return COLORS.inkSoft;
   const around = neighbors(gx, gy, 1);
-  let monster = false, house = false, gold = false;
+  let house = false, gold = false;
   for (const t of around) {
-    if (t.type === TYPE.MONSTER) monster = true;
-    else if (t.type === TYPE.HOUSE) house = true;
+    if (t.type === TYPE.HOUSE) house = true;
     else if (t.type === TYPE.OR && t.harvests > 0) gold = true;
   }
-  if (monster) return COLORS.red;
   if (gold) return COLORS.goldBright;
   if (house) return COLORS.greenBright;
   return COLORS.inkSoft;
-}
-
-// Compte les "?" sur le tracé (proportionnel à distance)
-function eventMarkers(path) {
-  const total = path.length - 1;
-  let acc = 0;
-  for (let i = 0; i < path.length - 1; i++) {
-    acc += Math.hypot(path[i + 1].x - path[i].x, path[i + 1].y - path[i].y);
-  }
-  // 1 "?" tous les ~2 tiles
-  const count = Math.max(1, Math.round(acc / (TILE * 2)));
-  const out = [];
-  for (let k = 0; k < count; k++) {
-    // position le long du chemin
-    const tt = (k + 0.5) / count;
-    const segIdx = Math.floor(tt * total);
-    const segT = (tt * total) - segIdx;
-    const p1 = path[segIdx], p2 = path[segIdx + 1];
-    if (!p2) continue;
-    out.push({
-      x: p1.x + (p2.x - p1.x) * segT,
-      y: p1.y + (p2.y - p1.y) * segT,
-    });
-  }
-  return out;
 }
 
 // ============== Rendu du décor ==============
@@ -772,19 +799,75 @@ function drawPolyline(path, opts = {}) {
   ctx.setLineDash([]);
 }
 
-function drawEventMarkers(markers) {
-  for (const m of markers) {
+function drawThreatBadges(threats) {
+  if (!threats || !threats.length) return;
+  const pulse = 1 + Math.sin(performance.now() / 220) * 0.12;
+  for (const th of threats) {
+    const c = tileCenter(th.tile.x, th.tile.y);
+    const bx = c.x;
+    const by = c.y - TILE / 2 - 6;
     ctx.save();
-    ctx.fillStyle = '#fff7d0';
-    ctx.strokeStyle = '#3d2817';
-    ctx.lineWidth = 1.2;
-    ctx.beginPath(); ctx.arc(m.x, m.y, 9, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = '#3d2817';
-    ctx.font = 'bold 12px Manrope, sans-serif';
+    ctx.translate(bx, by);
+    ctx.scale(pulse, pulse);
+    // halo
+    ctx.fillStyle = 'rgba(184, 58, 44, 0.25)';
+    ctx.beginPath(); ctx.arc(0, 0, 14, 0, Math.PI * 2); ctx.fill();
+    // pastille rouge
+    ctx.fillStyle = COLORS.red;
+    ctx.strokeStyle = '#fff7d0';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(0, 0, 9, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    // !
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 13px Manrope, sans-serif';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText('?', m.x, m.y + 1);
+    ctx.fillText('!', 0, 1);
     ctx.restore();
   }
+}
+
+function drawValidateButton() {
+  if (!state.selection || !state.pending || state.expe) {
+    state.validateBtn = null;
+    return;
+  }
+  const sel = state.selection;
+  const cx = state.cam.offsetX + ((sel.x0 + sel.x1 + 1) / 2) * TILE;
+  const cy = state.cam.offsetY + ((sel.y0 + sel.y1 + 1) / 2) * TILE;
+  const pulse = 1 + Math.sin(performance.now() / 280) * 0.06;
+  const r = 22 * pulse;
+
+  ctx.save();
+  // ombre
+  ctx.fillStyle = 'rgba(40,25,15,0.35)';
+  ctx.beginPath(); ctx.arc(cx + 2, cy + 4, r, 0, Math.PI * 2); ctx.fill();
+  // fond doré
+  const grad = ctx.createRadialGradient(cx - 6, cy - 8, 4, cx, cy, r);
+  grad.addColorStop(0, COLORS.goldBright);
+  grad.addColorStop(1, COLORS.gold);
+  ctx.fillStyle = grad;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+  // bord
+  ctx.strokeStyle = '#3d2817';
+  ctx.lineWidth = 2.2;
+  ctx.stroke();
+  // anneau intérieur
+  ctx.strokeStyle = 'rgba(255, 247, 208, 0.6)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(cx, cy, r - 4, 0, Math.PI * 2); ctx.stroke();
+  // checkmark
+  ctx.strokeStyle = '#3d2817';
+  ctx.lineWidth = 3.6;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(cx - 9, cy + 1);
+  ctx.lineTo(cx - 3, cy + 8);
+  ctx.lineTo(cx + 11, cy - 7);
+  ctx.stroke();
+  ctx.restore();
+
+  state.validateBtn = { x: cx, y: cy, r };
 }
 
 // ============== Floats / popups de chiffres ==============
@@ -850,7 +933,6 @@ function showToast(text) {
 let dragStart = null;
 canvas.addEventListener('pointerdown', (e) => {
   if (state.expe) return; // bloqué pendant expé
-  // Si on est en train de drag une recrue
   if (state.recruitDrag) return;
   // détection click sur recrue
   const r = pickRecruit(e.clientX, e.clientY);
@@ -859,11 +941,27 @@ canvas.addEventListener('pointerdown', (e) => {
     canvas.setPointerCapture(e.pointerId);
     return;
   }
+  // bouton de validation en attente ?
+  if (state.pending && state.validateBtn) {
+    const dx = e.clientX - state.validateBtn.x;
+    const dy = e.clientY - state.validateBtn.y;
+    if (Math.hypot(dx, dy) < state.validateBtn.r) {
+      const sel = state.selection;
+      state.pending = false;
+      state.validateBtn = null;
+      startExpedition(sel);
+      return;
+    }
+    // clic ailleurs : annule la sélection en attente
+    state.pending = false;
+    state.validateBtn = null;
+    state.selection = null;
+  }
   const { gx, gy } = pxToTile(e.clientX, e.clientY);
   if (!inGrid(gx, gy)) return;
   if (isComplex(gx, gy)) return;
-  if (state.paysans <= 0) {
-    showToast('Aucun paysan disponible.');
+  if (state.paysans + state.soldats <= 0) {
+    showToast('Aucune unité disponible.');
     return;
   }
   state.drag = { startGX: gx, startGY: gy, curGX: gx, curGY: gy };
@@ -911,7 +1009,7 @@ canvas.addEventListener('pointerup', (e) => {
     if (!isComplex(t.x, t.y)) { valid = true; break; }
   }
   if (valid) {
-    startExpedition(sel);
+    state.pending = true;        // attend la validation
   } else {
     state.selection = null;
   }
@@ -921,6 +1019,8 @@ canvas.addEventListener('pointerup', (e) => {
 canvas.addEventListener('pointercancel', () => {
   state.drag = null;
   state.selection = null;
+  state.pending = false;
+  state.validateBtn = null;
   state.recruitDrag = null;
 });
 
@@ -976,20 +1076,33 @@ function startExpedition(sel) {
   const reverse = path.slice().reverse();
   const tiles = tilesInSelection(sel).filter(t => !isComplex(t.x, t.y));
 
-  // determine combien de paysans + soldats partent
-  const sendP = Math.min(state.paysans, (sel.x1 - sel.x0 + 1) * (sel.y1 - sel.y0 + 1));
-  const sendS = Math.min(state.soldats, 2);
+  // taille de zone = capacité d'unités. On envoie tout ce qu'on a (cap par area).
+  const area = (sel.x1 - sel.x0 + 1) * (sel.y1 - sel.y0 + 1);
+  const sendP = Math.min(state.paysans, area);
+  const sendS = Math.min(state.soldats, area - sendP);
 
-  // sprites
   const sprites = [];
   for (let i = 0; i < sendP; i++) sprites.push(makeSprite(false));
   for (let i = 0; i < sendS; i++) sprites.push(makeSprite(true));
 
-  // events sur le tracé
-  const markers = eventMarkers(path);
+  // Encounters : monstres qui interceptent le chemin (hors zone cible)
+  const threats = findThreatMonsters(path, sel);
+  const encounters = threats.map(th => {
+    const c = tileCenter(th.tile.x, th.tile.y);
+    let bestT = 0, bestD = Infinity;
+    for (let i = 0; i < path.length - 1; i++) {
+      const p1 = path[i], p2 = path[i + 1];
+      const dx = p2.x - p1.x, dy = p2.y - p1.y;
+      const lenSq = dx * dx + dy * dy;
+      let s = lenSq === 0 ? 0 : ((c.x - p1.x) * dx + (c.y - p1.y) * dy) / lenSq;
+      s = Math.max(0, Math.min(1, s));
+      const cx = p1.x + s * dx, cy = p1.y + s * dy;
+      const d = Math.hypot(c.x - cx, c.y - cy);
+      if (d < bestD) { bestD = d; bestT = i + s; }
+    }
+    return { tile: th.tile, t: bestT, resolved: false };
+  }).sort((a, b) => a.t - b.t);
 
-  // zoom doux : focus = milieu chemin
-  const midPoint = path[Math.floor(path.length / 2)];
   state.cam.targetScale = 1.05;
 
   state.expe = {
@@ -997,23 +1110,19 @@ function startExpedition(sel) {
     sel, tiles,
     pathOut: path, pathBack: reverse,
     sprites,
-    markers,
+    encounters,
+    paysansAlive: sendP,
+    soldatsAlive: sendS,
     pickups: { ble: 0, bois: 0, pierre: 0, eau: 0, or: 0 },
     recruitGained: 0,
-    losses: 0,                  // paysans/soldats perdus
-    eventLog: [],
-    pathT: 0,                   // 0..path.length-1
-    workT: 0,                   // chrono dans 'work'
-    workEvents: [],             // events à jouer sur la zone (sequencés)
-    eventIndex: 0,
+    losses: { paysans: 0, soldats: 0 },
+    pathT: 0,
+    workT: 0,
     leaveT: 0,
     arriveT: 0,
-    cameraReset: false,
+    fightT: 0,
+    fightingTile: null,
   };
-  // déclenche events sur path
-  for (const m of state.expe.markers) {
-    state.expe.workEvents.push({ kind: 'route', x: m.x, y: m.y, played: false });
-  }
 }
 
 function makeSprite(isSold) {
@@ -1050,27 +1159,56 @@ function tickExpedition(dt) {
     }
   }
   else if (E.phase === 'travel') {
+    // déclenche un combat quand on croise un encounter monstre
+    let triggered = null;
+    for (const enc of E.encounters) {
+      if (!enc.resolved && E.pathT >= enc.t) { triggered = enc; break; }
+    }
+    if (triggered) {
+      triggered.resolved = true;
+      E.fightingTile = triggered.tile;
+      E.fightT = 0;
+      E.phase = 'fight';
+      resolveCombat(E, triggered.tile);
+      return;
+    }
     // pas-à-pas le long du chemin
-    E.pathT += dt * 1.3; // vitesse
+    E.pathT += dt * 1.3;
     const totalT = E.pathOut.length - 1;
     if (E.pathT >= totalT) {
       E.pathT = totalT;
       E.phase = 'work';
       E.workT = 0;
-      // lance la résolution
       resolveAllOnZone(E);
     }
-    // déclenche markers d'event quand on les croise
-    for (const ev of E.workEvents) {
-      if (ev.kind !== 'route' || ev.played) continue;
-      const sp = lerpPath(E.pathOut, E.pathT);
-      if (Math.hypot(sp.x - ev.x, sp.y - ev.y) < 14) {
-        ev.played = true;
-        playRouteEvent(ev);
+    placeSpritesAlongPath(E, E.pathOut, E.pathT, totalT);
+  }
+  else if (E.phase === 'fight') {
+    E.fightT += dt;
+    // petit clash visuel : sprites se rassemblent près du monstre
+    if (E.fightingTile) {
+      const c = tileCenter(E.fightingTile.x, E.fightingTile.y);
+      for (let i = 0; i < E.sprites.length; i++) {
+        const s = E.sprites[i];
+        if (s.alpha <= 0) continue;
+        const angle = (i / Math.max(1, E.sprites.length)) * Math.PI * 2 + E.fightT * 4;
+        const r = 14 + Math.sin(E.fightT * 12 + i) * 4;
+        s.targetX = c.x + Math.cos(angle) * r;
+        s.targetY = c.y + Math.sin(angle) * r;
+        s.x += (s.targetX - s.x) * 0.35;
+        s.y += (s.targetY - s.y) * 0.35;
       }
     }
-    // déplace les sprites le long du chemin avec un échelonnement
-    placeSpritesAlongPath(E, E.pathOut, E.pathT, totalT);
+    if (E.fightT > 0.7) {
+      // tous morts ?
+      if (E.paysansAlive + E.soldatsAlive <= 0) {
+        // expédition décimée : retour vide
+        E.phase = 'return';
+        E.pathT = 0;
+      } else {
+        E.phase = 'travel';
+      }
+    }
   }
   else if (E.phase === 'work') {
     E.workT += dt;
@@ -1119,9 +1257,11 @@ function tickExpedition(dt) {
           age: 0,
         });
       }
-      // perte de paysans
-      state.paysans = Math.max(0, state.paysans - E.losses);
-      if (E.losses > 0) bumpCounter('pop');
+      // pertes
+      state.paysans = Math.max(0, state.paysans - E.losses.paysans);
+      state.soldats = Math.max(0, state.soldats - E.losses.soldats);
+      if (E.losses.paysans > 0) bumpCounter('pop');
+      if (E.losses.soldats > 0) bumpCounter('sol');
       updateHUD();
       state.expe = null;
       state.selection = null;
@@ -1160,42 +1300,99 @@ function placeSpritesAlongPath(E, path, t, totalT) {
 }
 
 // ============== Résolution gameplay ==============
-function resolveAllOnZone(E) {
-  // récolte sur les cases
-  for (const t of E.tiles) {
-    if (t.harvestsMax > 0 && t.harvests > 0) {
-      const amt = HARVEST_AMOUNT[t.type];
-      E.pickups[t.type] = (E.pickups[t.type] || 0) + amt;
-      t.harvests--;
-      // particule
-      const c = tileCenter(t.x, t.y);
-      spawnFloat(`+${amt} ${labelOfType(t.type)}`, c.x, c.y - 12, '#3d2817');
-      E.eventLog.push(`Récolte: +${amt} ${labelOfType(t.type)}`);
-    } else if (t.type === TYPE.MONSTER) {
-      // combat sur place
-      const surviveSold = state.soldats >= 1;
-      const c = tileCenter(t.x, t.y);
-      if (surviveSold) {
-        spawnFloat('Camp détruit !', c.x, c.y - 12, COLORS.red);
-        E.eventLog.push('Camp de monstres détruit');
-        // un soldat blessé ?
-        if (rng() < 0.3) E.losses += 0; // pas de perte light
-      } else {
-        spawnFloat('-1 paysan', c.x, c.y - 12, COLORS.red);
-        E.losses++;
-        E.eventLog.push('Embuscade : 1 paysan tombé');
-      }
-    } else if (t.type === TYPE.HOUSE) {
-      // recrue
-      const c = tileCenter(t.x, t.y);
-      if (rng() < 0.85) {
-        E.recruitGained++;
-        spawnFloat('+1 recrue', c.x, c.y - 12, COLORS.green);
-        E.eventLog.push('Une recrue rejoint la troupe');
-      }
+
+// Combat sur un camp de monstres (sur le chemin OU dans la zone).
+// Règles :
+//  - Sans soldat : on ne tue pas, 1 paysan meurt, monstre survit.
+//  - Avec soldat + surnombre (puissance >= 2x force monstre) : monstre meurt, 0 perte.
+//  - Avec soldat sans surnombre : monstre meurt, 1 soldat tombe.
+function resolveCombat(E, mTile) {
+  if (mTile.type !== TYPE.MONSTER) return;
+  const c = tileCenter(mTile.x, mTile.y);
+  const monsterStrength = 1;
+  // puissance combat : soldat = 1, paysan = 0.5
+  const power = E.soldatsAlive + 0.5 * E.paysansAlive;
+
+  if (E.soldatsAlive >= 1) {
+    if (power >= monsterStrength * 2) {
+      mTile.type = TYPE.EMPTY;
+      mTile.harvests = 0; mTile.harvestsMax = 0;
+      spawnFloat('Camp détruit !', c.x, c.y - 14, COLORS.gold);
+    } else {
+      mTile.type = TYPE.EMPTY;
+      mTile.harvests = 0; mTile.harvestsMax = 0;
+      E.soldatsAlive--;
+      E.losses.soldats++;
+      removeSpriteOf(E, true);
+      spawnFloat('-1 soldat', c.x, c.y - 14, COLORS.red);
+      spawnFloat('Camp détruit', c.x + 28, c.y - 4, '#3d2817');
+    }
+  } else {
+    if (E.paysansAlive >= 1) {
+      E.paysansAlive--;
+      E.losses.paysans++;
+      removeSpriteOf(E, false);
+      spawnFloat('-1 paysan', c.x, c.y - 14, COLORS.red);
+      spawnFloat('Embuscade', c.x + 28, c.y - 4, COLORS.red);
     }
   }
-  // chance de recrue depuis maisons voisines
+}
+
+function removeSpriteOf(E, isSold) {
+  const idx = E.sprites.findIndex(s => s.isSold === isSold && s.alpha > 0);
+  if (idx >= 0) E.sprites[idx].alpha = 0;
+}
+
+function resolveAllOnZone(E) {
+  // 1) combats : monstres dans la zone (priorité, ils consomment soldats)
+  const monsters = E.tiles.filter(t => t.type === TYPE.MONSTER);
+  for (const t of monsters) {
+    if (E.paysansAlive + E.soldatsAlive <= 0) break;
+    resolveCombat(E, t);
+  }
+
+  // 2) récoltes — paysans en priorité (rendement plein), puis soldats à 50% (floor)
+  let pAvail = E.paysansAlive;
+  let sAvail = E.soldatsAlive;
+  // Trier les ressources par valeur de base décroissante : paysans aux plus juteux
+  const resources = E.tiles
+    .filter(t => t.harvestsMax > 0 && t.harvests > 0)
+    .sort((a, b) => HARVEST_AMOUNT[b.type] - HARVEST_AMOUNT[a.type]);
+
+  for (const t of resources) {
+    let yieldAmt = 0;
+    let workerLabel = '';
+    if (pAvail > 0) {
+      yieldAmt = HARVEST_AMOUNT[t.type];
+      pAvail--;
+      workerLabel = '';
+    } else if (sAvail > 0) {
+      yieldAmt = Math.floor(HARVEST_AMOUNT[t.type] * 0.5);
+      sAvail--;
+      workerLabel = ' (soldat)';
+    } else {
+      break; // plus assez d'unités pour récolter
+    }
+    if (yieldAmt > 0) {
+      E.pickups[t.type] = (E.pickups[t.type] || 0) + yieldAmt;
+      t.harvests--;
+      const c = tileCenter(t.x, t.y);
+      spawnFloat(`+${yieldAmt} ${labelOfType(t.type)}${workerLabel}`, c.x, c.y - 12, '#3d2817');
+    } else {
+      const c = tileCenter(t.x, t.y);
+      spawnFloat('Trop dur', c.x, c.y - 12, COLORS.inkSoft);
+    }
+  }
+
+  // 3) recrues : maisons dans la zone OU adjacentes
+  const houses = E.tiles.filter(t => t.type === TYPE.HOUSE);
+  for (const t of houses) {
+    if (rng() < 0.85) {
+      E.recruitGained++;
+      const c = tileCenter(t.x, t.y);
+      spawnFloat('+1 recrue', c.x, c.y - 12, COLORS.green);
+    }
+  }
   for (const t of E.tiles) {
     const ns = neighbors(t.x, t.y, 1);
     for (const n of ns) {
@@ -1208,31 +1405,6 @@ function resolveAllOnZone(E) {
         }
       }
     }
-  }
-}
-
-function playRouteEvent(ev) {
-  const E = state.expe;
-  // events possibles : trouvaille, embuscade, marchand, rien
-  const roll = rng();
-  if (roll < 0.25) {
-    state.expe.pickups.or = (state.expe.pickups.or || 0) + 1;
-    spawnFloat('+1 or trouvé', ev.x, ev.y - 14, COLORS.gold);
-    showToast('Trouvaille : un voyageur a perdu un sac d\'or sur la route.');
-  } else if (roll < 0.45) {
-    state.expe.pickups.ble = (state.expe.pickups.ble || 0) + 2;
-    spawnFloat('+2 blé', ev.x, ev.y - 14, '#8a6a20');
-    showToast('Champ sauvage : on glane quelques gerbes de blé.');
-  } else if (roll < 0.6) {
-    state.expe.losses += (state.soldats > 0 ? 0 : 1);
-    spawnFloat(state.soldats > 0 ? 'Repoussé !' : '-1 paysan', ev.x, ev.y - 14, COLORS.red);
-    showToast(state.soldats > 0 ? 'Bandits repoussés par les soldats.' : 'Bandits ! Un paysan blessé.');
-  } else if (roll < 0.78) {
-    state.expe.pickups.bois = (state.expe.pickups.bois || 0) + 1;
-    spawnFloat('+1 bois', ev.x, ev.y - 14, '#5a8a3d');
-    showToast('Bois mort ramassé sur la route.');
-  } else {
-    showToast('La route est calme.');
   }
 }
 
@@ -1408,12 +1580,13 @@ function frame(now) {
   drawBarracks();
   drawHouseCiv();
 
-  // Sélection en cours
+  // Sélection en cours (drag ou en attente de validation)
   if (state.selection && !state.expe) {
     drawSelection();
     const path = buildPath(state.selection);
     drawPolyline(path);
-    drawEventMarkers(eventMarkers(path));
+    drawThreatBadges(findThreatMonsters(path, state.selection));
+    drawValidateButton();
   }
 
   // Polyline d'expé en cours (subtile)
