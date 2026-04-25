@@ -105,7 +105,7 @@ function genMap() {
   for (let y = 0; y < GRID_H; y++) {
     const row = [];
     for (let x = 0; x < GRID_W; x++) {
-      row.push({ type: TYPE.EMPTY, harvests: 0, harvestsMax: 0, x, y });
+      row.push({ type: TYPE.EMPTY, harvests: 0, harvestsMax: 0, cooldown: 0, x, y });
     }
     grid.push(row);
   }
@@ -240,37 +240,24 @@ function neighbors(gx, gy, r = 1) {
 }
 
 // ============== Sélection (drag rectangle) ==============
-function maxSelSize() {
-  // taille max = nombre total d'unités (paysans + soldats)
-  const total = state.paysans + state.soldats;
-  if (total <= 2) return { w: 2, h: 2 };
-  if (total <= 3) return { w: 3, h: 2 };
-  if (total <= 4) return { w: 3, h: 3 };
-  if (total <= 6) return { w: 4, h: 3 };
-  if (total <= 9) return { w: 4, h: 4 };
-  if (total <= 12) return { w: 5, h: 4 };
-  if (total <= 16) return { w: 5, h: 5 };
-  return { w: 6, h: 5 };
-}
-
+// Aire max d'une zone = nombre de paysans (1 paysan couvre 1 case).
+// Les soldats n'élargissent pas la zone — ils escortent uniquement.
 function clampSelection(x0, y0, x1, y1) {
-  // ordre min/max
   let ax = Math.min(x0, x1), bx = Math.max(x0, x1);
   let ay = Math.min(y0, y1), by = Math.max(y0, y1);
-  const max = maxSelSize();
-  // limite la taille en gardant l'ancre = startGX/startGY
   const anchorX = x0, anchorY = y0;
-  if (bx - ax + 1 > max.w) {
-    if (anchorX === ax) bx = ax + max.w - 1;
-    else ax = bx - max.w + 1;
+  const maxArea = Math.max(1, state.paysans);
+  let w = bx - ax + 1, h = by - ay + 1;
+  // Réduit la dimension la plus longue jusqu'à passer sous l'aire max.
+  while (w * h > maxArea && (w > 1 || h > 1)) {
+    if (w >= h && w > 1) {
+      if (anchorX === ax) bx--; else ax++;
+      w--;
+    } else if (h > 1) {
+      if (anchorY === ay) by--; else ay++;
+      h--;
+    } else break;
   }
-  if (by - ay + 1 > max.h) {
-    if (anchorY === ay) by = ay + max.h - 1;
-    else ay = by - max.h + 1;
-  }
-  // exclure le complexe central (la zone ne peut pas chevaucher)
-  // simplification : si elle chevauche, on rétrécit
-  // (on tolère, juste on filtre pendant la résolution)
   return { x0: ax, y0: ay, x1: bx, y1: by };
 }
 
@@ -424,7 +411,7 @@ function drawTile(t) {
   else if (t.type === TYPE.PIERRE) drawStoneTexture(t);
   else if (t.type === TYPE.EAU) drawWaterTexture(t);
   else if (t.type === TYPE.OR) drawGoldTexture(t);
-  else if (t.type === TYPE.HOUSE) drawHouseSprite();
+  else if (t.type === TYPE.HOUSE) drawHouseSprite(t);
   else if (t.type === TYPE.MONSTER) drawMonsterCamp();
   ctx.restore();
 
@@ -517,34 +504,49 @@ function drawGoldTexture(t) {
   }
 }
 
-function drawHouseSprite() {
+function drawHouseSprite(t) {
+  const cooled = t && t.cooldown > 0;
+  ctx.save();
+  if (cooled) ctx.globalAlpha = 0.55;
   // toit
-  ctx.fillStyle = '#7a3a2a';
+  ctx.fillStyle = cooled ? '#5a2a1e' : '#7a3a2a';
   ctx.beginPath();
-  ctx.moveTo(8, 26);
-  ctx.lineTo(TILE / 2, 10);
-  ctx.lineTo(TILE - 8, 26);
+  ctx.moveTo(6, 22);
+  ctx.lineTo(TILE / 2, 8);
+  ctx.lineTo(TILE - 6, 22);
   ctx.closePath();
   ctx.fill();
   // mur
-  ctx.fillStyle = '#e0c890';
-  ctx.fillRect(12, 26, TILE - 24, 22);
+  ctx.fillStyle = cooled ? '#a89568' : '#e0c890';
+  ctx.fillRect(10, 22, TILE - 20, 18);
   // porte
-  ctx.fillStyle = '#5e3a1a';
-  ctx.fillRect(TILE / 2 - 3, 36, 6, 12);
+  ctx.fillStyle = cooled ? '#2e1a0a' : '#5e3a1a';
+  ctx.fillRect(TILE / 2 - 3, 30, 6, 10);
   // fenêtres
-  ctx.fillStyle = '#a07c3a';
-  ctx.fillRect(16, 30, 4, 4);
-  ctx.fillRect(TILE - 20, 30, 4, 4);
+  ctx.fillStyle = cooled ? '#5e4a28' : '#a07c3a';
+  ctx.fillRect(13, 25, 4, 4);
+  ctx.fillRect(TILE - 17, 25, 4, 4);
   // contour
   ctx.strokeStyle = '#3d2817';
   ctx.lineWidth = 1.2;
   ctx.beginPath();
-  ctx.moveTo(8, 26);
-  ctx.lineTo(TILE / 2, 10);
-  ctx.lineTo(TILE - 8, 26);
+  ctx.moveTo(6, 22);
+  ctx.lineTo(TILE / 2, 8);
+  ctx.lineTo(TILE - 6, 22);
   ctx.stroke();
-  ctx.strokeRect(12, 26, TILE - 24, 22);
+  ctx.strokeRect(10, 22, TILE - 20, 18);
+  ctx.restore();
+  // badge cooldown
+  if (cooled) {
+    const bx = TILE - 12, by = TILE - 11;
+    ctx.fillStyle = 'rgba(40,25,15,0.92)';
+    ctx.beginPath(); ctx.arc(bx, by, 8, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#fff7d0'; ctx.lineWidth = 1.2; ctx.stroke();
+    ctx.fillStyle = '#fff7d0';
+    ctx.font = 'bold 10px Manrope, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(t.cooldown + '', bx, by + 1);
+  }
 }
 
 function drawMonsterCamp() {
@@ -746,7 +748,11 @@ function drawSelection() {
     } else if (t.type === TYPE.MONSTER) {
       drawFloatingLabel(`!`, c.x, c.y, '#fff', COLORS.red);
     } else if (t.type === TYPE.HOUSE) {
-      drawFloatingLabel(`+1`, c.x, c.y - 2, '#fff', COLORS.green);
+      if (t.cooldown > 0) {
+        drawFloatingLabel('vide', c.x, c.y - 2, '#fff7d0', '#7a5a2a');
+      } else {
+        drawFloatingLabel('+1', c.x, c.y - 2, '#fff', COLORS.green);
+      }
     }
   }
 }
@@ -960,8 +966,8 @@ canvas.addEventListener('pointerdown', (e) => {
   const { gx, gy } = pxToTile(e.clientX, e.clientY);
   if (!inGrid(gx, gy)) return;
   if (isComplex(gx, gy)) return;
-  if (state.paysans + state.soldats <= 0) {
-    showToast('Aucune unité disponible.');
+  if (state.paysans <= 0) {
+    showToast('Aucun paysan disponible.');
     return;
   }
   state.drag = { startGX: gx, startGY: gy, curGX: gx, curGY: gy };
@@ -1076,17 +1082,22 @@ function startExpedition(sel) {
   const reverse = path.slice().reverse();
   const tiles = tilesInSelection(sel).filter(t => !isComplex(t.x, t.y));
 
-  // taille de zone = capacité d'unités. On envoie tout ce qu'on a (cap par area).
+  // 1 paysan = 1 case. Les soldats n'occupent pas de case.
   const area = (sel.x1 - sel.x0 + 1) * (sel.y1 - sel.y0 + 1);
   const sendP = Math.min(state.paysans, area);
-  const sendS = Math.min(state.soldats, area - sendP);
+
+  // Encounters : monstres qui interceptent le chemin (hors zone cible)
+  const threats = findThreatMonsters(path, sel);
+  const monstersOnPath = threats.length;
+  const monstersInZone = tiles.filter(t => t.type === TYPE.MONSTER).length;
+  const totalMonsters = monstersOnPath + monstersInZone;
+  // 1 soldat envoyé en escorte par monstre rencontré (plafonné par le stock).
+  const sendS = Math.min(state.soldats, totalMonsters);
 
   const sprites = [];
   for (let i = 0; i < sendP; i++) sprites.push(makeSprite(false));
   for (let i = 0; i < sendS; i++) sprites.push(makeSprite(true));
 
-  // Encounters : monstres qui interceptent le chemin (hors zone cible)
-  const threats = findThreatMonsters(path, sel);
   const encounters = threats.map(th => {
     const c = tileCenter(th.tile.x, th.tile.y);
     let bestT = 0, bestD = Infinity;
@@ -1113,6 +1124,8 @@ function startExpedition(sel) {
     encounters,
     paysansAlive: sendP,
     soldatsAlive: sendS,
+    soldatsBudget: sendS,            // 1 soldat tue 1 monstre, pas de réutilisation
+    totalMonsters,
     pickups: { ble: 0, bois: 0, pierre: 0, eau: 0, or: 0 },
     recruitGained: 0,
     losses: { paysans: 0, soldats: 0 },
@@ -1262,6 +1275,13 @@ function tickExpedition(dt) {
       state.soldats = Math.max(0, state.soldats - E.losses.soldats);
       if (E.losses.paysans > 0) bumpCounter('pop');
       if (E.losses.soldats > 0) bumpCounter('sol');
+      // tic des cooldowns sur toutes les maisons
+      for (let yy = 0; yy < GRID_H; yy++) {
+        for (let xx = 0; xx < GRID_W; xx++) {
+          const tt = state.grid[yy][xx];
+          if (tt.type === TYPE.HOUSE && tt.cooldown > 0) tt.cooldown--;
+        }
+      }
       updateHUD();
       state.expe = null;
       state.selection = null;
@@ -1302,39 +1322,29 @@ function placeSpritesAlongPath(E, path, t, totalT) {
 // ============== Résolution gameplay ==============
 
 // Combat sur un camp de monstres (sur le chemin OU dans la zone).
-// Règles :
-//  - Sans soldat : on ne tue pas, 1 paysan meurt, monstre survit.
-//  - Avec soldat + surnombre (puissance >= 2x force monstre) : monstre meurt, 0 perte.
-//  - Avec soldat sans surnombre : monstre meurt, 1 soldat tombe.
+// Règle simple :
+//  - Si un soldat dispo dans le budget d'escorte : il tue le monstre, il survit.
+//  - Sinon, 1 paysan se sacrifie pour tuer le monstre.
+//  - Si plus aucun paysan non plus, le camp survit (improbable car on cape l'envoi).
 function resolveCombat(E, mTile) {
   if (mTile.type !== TYPE.MONSTER) return;
   const c = tileCenter(mTile.x, mTile.y);
-  const monsterStrength = 1;
-  // puissance combat : soldat = 1, paysan = 0.5
-  const power = E.soldatsAlive + 0.5 * E.paysansAlive;
 
-  if (E.soldatsAlive >= 1) {
-    if (power >= monsterStrength * 2) {
-      mTile.type = TYPE.EMPTY;
-      mTile.harvests = 0; mTile.harvestsMax = 0;
-      spawnFloat('Camp détruit !', c.x, c.y - 14, COLORS.gold);
-    } else {
-      mTile.type = TYPE.EMPTY;
-      mTile.harvests = 0; mTile.harvestsMax = 0;
-      E.soldatsAlive--;
-      E.losses.soldats++;
-      removeSpriteOf(E, true);
-      spawnFloat('-1 soldat', c.x, c.y - 14, COLORS.red);
-      spawnFloat('Camp détruit', c.x + 28, c.y - 4, '#3d2817');
-    }
+  if (E.soldatsBudget > 0) {
+    E.soldatsBudget--;
+    mTile.type = TYPE.EMPTY;
+    mTile.harvests = 0; mTile.harvestsMax = 0;
+    spawnFloat('Camp détruit !', c.x, c.y - 14, COLORS.gold);
+  } else if (E.paysansAlive >= 1) {
+    E.paysansAlive--;
+    E.losses.paysans++;
+    removeSpriteOf(E, false);
+    mTile.type = TYPE.EMPTY;
+    mTile.harvests = 0; mTile.harvestsMax = 0;
+    spawnFloat('-1 paysan', c.x, c.y - 14, COLORS.red);
+    spawnFloat('Camp détruit', c.x + 28, c.y - 4, '#3d2817');
   } else {
-    if (E.paysansAlive >= 1) {
-      E.paysansAlive--;
-      E.losses.paysans++;
-      removeSpriteOf(E, false);
-      spawnFloat('-1 paysan', c.x, c.y - 14, COLORS.red);
-      spawnFloat('Embuscade', c.x + 28, c.y - 4, COLORS.red);
-    }
+    spawnFloat('Repli', c.x, c.y - 14, COLORS.red);
   }
 }
 
@@ -1351,44 +1361,28 @@ function resolveAllOnZone(E) {
     resolveCombat(E, t);
   }
 
-  // 2) récoltes — paysans en priorité (rendement plein), puis soldats à 50% (floor)
+  // 2) récoltes — paysans uniquement (les soldats n'agricultent pas)
   let pAvail = E.paysansAlive;
-  let sAvail = E.soldatsAlive;
-  // Trier les ressources par valeur de base décroissante : paysans aux plus juteux
   const resources = E.tiles
     .filter(t => t.harvestsMax > 0 && t.harvests > 0)
     .sort((a, b) => HARVEST_AMOUNT[b.type] - HARVEST_AMOUNT[a.type]);
 
   for (const t of resources) {
-    let yieldAmt = 0;
-    let workerLabel = '';
-    if (pAvail > 0) {
-      yieldAmt = HARVEST_AMOUNT[t.type];
-      pAvail--;
-      workerLabel = '';
-    } else if (sAvail > 0) {
-      yieldAmt = Math.floor(HARVEST_AMOUNT[t.type] * 0.5);
-      sAvail--;
-      workerLabel = ' (soldat)';
-    } else {
-      break; // plus assez d'unités pour récolter
-    }
-    if (yieldAmt > 0) {
-      E.pickups[t.type] = (E.pickups[t.type] || 0) + yieldAmt;
-      t.harvests--;
-      const c = tileCenter(t.x, t.y);
-      spawnFloat(`+${yieldAmt} ${labelOfType(t.type)}${workerLabel}`, c.x, c.y - 12, '#3d2817');
-    } else {
-      const c = tileCenter(t.x, t.y);
-      spawnFloat('Trop dur', c.x, c.y - 12, COLORS.inkSoft);
-    }
+    if (pAvail <= 0) break;
+    const yieldAmt = HARVEST_AMOUNT[t.type];
+    pAvail--;
+    E.pickups[t.type] = (E.pickups[t.type] || 0) + yieldAmt;
+    t.harvests--;
+    const c = tileCenter(t.x, t.y);
+    spawnFloat(`+${yieldAmt} ${labelOfType(t.type)}`, c.x, c.y - 12, '#3d2817');
   }
 
-  // 3) recrues : maisons dans la zone OU adjacentes
-  const houses = E.tiles.filter(t => t.type === TYPE.HOUSE);
+  // 3) recrues : maisons (cooldown 15 expés après recrutement)
+  const houses = E.tiles.filter(t => t.type === TYPE.HOUSE && t.cooldown <= 0);
   for (const t of houses) {
     if (rng() < 0.85) {
       E.recruitGained++;
+      t.cooldown = 15;
       const c = tileCenter(t.x, t.y);
       spawnFloat('+1 recrue', c.x, c.y - 12, COLORS.green);
     }
@@ -1396,9 +1390,10 @@ function resolveAllOnZone(E) {
   for (const t of E.tiles) {
     const ns = neighbors(t.x, t.y, 1);
     for (const n of ns) {
-      if (n.type === TYPE.HOUSE && !E.tiles.includes(n)) {
+      if (n.type === TYPE.HOUSE && n.cooldown <= 0 && !E.tiles.includes(n)) {
         if (rng() < 0.25) {
           E.recruitGained++;
+          n.cooldown = 15;
           const c = tileCenter(n.x, n.y);
           spawnFloat('+1 recrue', c.x, c.y - 12, COLORS.green);
           break;
